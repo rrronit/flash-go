@@ -9,49 +9,124 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"flash-go/internal/core"
+	"flash-go/internal/models"
+	"flash-go/internal/utils"
 )
 
 const (
-	isolatePath   = "isolate"
-	boxModulo     = 2147483647
-	fakeExecution = false
+	isolatePath = "isolate"
+	boxModulo   = 2147483647
 )
 
-// Executor runs jobs inside isolate.
-type Executor struct{}
-
-// NewExecutor creates an isolate executor.
-func NewExecutor() *Executor {
-	return &Executor{}
+type boxHandle struct {
+	id   uint64
+	path string
+	mu   sync.Mutex
 }
 
-// Execute runs a job inside isolate and updates its fields.
-func (e *Executor) Execute(ctx context.Context, job *core.Job) (core.JobStatus, error) {
-	if fakeExecution {
-		// Fake accept for now to test the executor.
-		job.Status = core.JobStatus{Kind: core.StatusAccepted}
-		start := time.Now()
-		job.StartedAt = start.UnixNano()
-		time.Sleep(1 * time.Second)
-		job.FinishedAt = time.Now().UnixNano()
-		job.Output.Time = time.Since(start).Seconds()
-		return job.Status, nil
+func (b *boxHandle) initIfNeeded(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.path != "" {
+		return nil
 	}
-	boxID := job.ID % boxModulo
-	boxPath, err := initBox(ctx, boxID)
+	boxPath, err := initBox(ctx, b.id)
 	if err != nil {
-		job.Status = core.JobStatus{Kind: core.StatusInternalError}
-		job.Output.Message = err.Error()
-		job.FinishedAt = time.Now().UnixNano()
-		return job.Status, err
+		return err
+	}
+	b.path = boxPath
+	return nil
+}
+
+type Executor struct {
+	pool    chan *boxHandle
+	usePool bool
+}
+
+// NewExecutor creates an isolate executor with a reusable box pool.
+func NewExecutor(poolSize int, usePool bool) *Executor {
+	executor := &Executor{usePool: usePool}
+	if !usePool {
+		return executor
+	}
+	if poolSize < 1 {
+		poolSize = 1
+	}
+	pool := make(chan *boxHandle, poolSize)
+	for i := 0; i < poolSize; i++ {
+		pool <- &boxHandle{id: uint64(i + 1)}
+	}
+	executor.pool = pool
+	return executor
+}
+
+func (e *Executor) acquireBox(ctx context.Context) (*boxHandle, error) {
+	if !e.usePool || e.pool == nil {
+		return nil, errors.New("executor pool is not enabled")
+	}
+	select {
+	case box := <-e.pool:
+		if err := box.initIfNeeded(ctx); err != nil {
+			e.pool <- box
+			return nil, err
+		}
+		return box, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (e *Executor) releaseBox(box *boxHandle) {
+	if box == nil || e.pool == nil {
+		return
+	}
+	e.pool <- box
+}
+
+func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStatus, error) {
+
+	var (
+		boxID   uint64
+		boxPath string
+		box     *boxHandle
+		err     error
+	)
+	if e.usePool {
+		box, err = e.acquireBox(ctx)
+		if err != nil {
+			job.Status = models.JobStatus{Kind: models.StatusInternalError}
+			job.Output.Message = err.Error()
+			job.FinishedAt = time.Now().UnixNano()
+			return job.Status, err
+		}
+		defer e.releaseBox(box)
+
+		if err := cleanBoxContents(box.path); err != nil {
+			job.Status = models.JobStatus{Kind: models.StatusInternalError}
+			job.Output.Message = fmt.Sprintf("failed to clean box: %v", err)
+			job.FinishedAt = time.Now().UnixNano()
+			return job.Status, err
+		}
+
+		boxID = box.id
+		boxPath = box.path
+	} else {
+		boxID = job.ID % boxModulo
+		boxPath, err = initBox(ctx, boxID)
+		if err != nil {
+			job.Status = models.JobStatus{Kind: models.StatusInternalError}
+			job.Output.Message = err.Error()
+			job.FinishedAt = time.Now().UnixNano()
+			return job.Status, err
+		}
 	}
 
 	paths, err := setupFiles(job, boxPath)
 	if err != nil {
-		job.Status = core.JobStatus{Kind: core.StatusInternalError}
+		job.Status = models.JobStatus{Kind: models.StatusInternalError}
 		job.Output.Message = err.Error()
 		job.FinishedAt = time.Now().UnixNano()
 		return job.Status, err
@@ -60,12 +135,12 @@ func (e *Executor) Execute(ctx context.Context, job *core.Job) (core.JobStatus, 
 	if job.Language.CompileCmd != "" {
 		compileStatus, compileErr := compileJob(ctx, job, boxID, paths)
 		if compileErr != nil {
-			job.Status = core.JobStatus{Kind: core.StatusInternalError}
+			job.Status = models.JobStatus{Kind: models.StatusInternalError}
 			job.Output.Message = compileErr.Error()
 			job.FinishedAt = time.Now().UnixNano()
 			return job.Status, compileErr
 		}
-		if compileStatus.Kind == core.StatusCompilationError {
+		if compileStatus.Kind == models.StatusCompilationError {
 			job.Status = compileStatus
 			job.FinishedAt = time.Now().UnixNano()
 			return job.Status, nil
@@ -74,22 +149,22 @@ func (e *Executor) Execute(ctx context.Context, job *core.Job) (core.JobStatus, 
 
 	runErr := runJob(ctx, job, boxID, paths)
 	if runErr != nil && !errors.Is(runErr, context.DeadlineExceeded) {
-		job.Status = core.JobStatus{Kind: core.StatusInternalError}
+		job.Status = models.JobStatus{Kind: models.StatusInternalError}
 		job.Output.Message = runErr.Error()
 		job.FinishedAt = time.Now().UnixNano()
 		return job.Status, runErr
 	}
 
 	if err := readOutputs(job, paths); err != nil {
-		job.Status = core.JobStatus{Kind: core.StatusInternalError}
+		job.Status = models.JobStatus{Kind: models.StatusInternalError}
 		job.Output.Message = err.Error()
 		job.FinishedAt = time.Now().UnixNano()
 		return job.Status, err
 	}
 
-	meta, err := readMetadata(paths.MetadataPath)
+	meta, err := utils.ReadMetadata(paths.MetadataPath)
 	if err != nil {
-		job.Status = core.JobStatus{Kind: core.StatusInternalError}
+		job.Status = models.JobStatus{Kind: models.StatusInternalError}
 		job.Output.Message = err.Error()
 		job.FinishedAt = time.Now().UnixNano()
 		return job.Status, err
@@ -100,29 +175,35 @@ func (e *Executor) Execute(ctx context.Context, job *core.Job) (core.JobStatus, 
 	job.Output.ExitCode = meta.ExitCode
 	job.Output.Message = meta.Message
 
-	job.Status = determineStatus(meta.Status, meta.ExitCode, job.Output.Stdout, job.ExpectedOutput)
+	job.Status = utils.DetermineStatus(meta.Status, meta.ExitCode, job.Output.Stdout, job.ExpectedOutput)
 	job.FinishedAt = time.Now().UnixNano()
 
 	return job.Status, nil
 }
 
-// Cleanup removes the isolate box for a job.
 func (e *Executor) Cleanup(jobID uint64) {
+	if e.usePool {
+		return
+	}
 	boxID := jobID % boxModulo
-	_ = exec.Command(isolatePath, "--cg", "-b", strconv.FormatUint(boxID, 10), "--cleanup").Run()
+	boxIDStr := strconv.FormatUint(boxID, 10)
+	cmd := exec.Command(isolatePath, "-b", boxIDStr, "--cleanup")
+	_ = cmd.Start()
+	go func() {
+		_ = cmd.Wait()
+	}()
 }
 
-type jobPaths struct {
-	BoxPath           string
-	MetadataPath      string
-	StdoutPath        string
-	StderrPath        string
-	StdinPath         string
-	CompileOutputPath string
+func (e *Executor) CleanupSync(jobID uint64) {
+	if e.usePool {
+		return
+	}
+	boxID := jobID % boxModulo
+	_ = exec.Command(isolatePath, "-b", strconv.FormatUint(boxID, 10), "--cleanup").Run()
 }
 
 func initBox(ctx context.Context, boxID uint64) (string, error) {
-	cmd := exec.CommandContext(ctx, isolatePath, "-b", strconv.FormatUint(boxID, 10), "--cg", "--init")
+	cmd := exec.CommandContext(ctx, isolatePath, "-b", strconv.FormatUint(boxID, 10), "--init")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("isolate init failed: %w (%s)", err, strings.TrimSpace(string(output)))
@@ -134,7 +215,30 @@ func initBox(ctx context.Context, boxID uint64) (string, error) {
 	return boxPath, nil
 }
 
-func setupFiles(job *core.Job, boxPath string) (jobPaths, error) {
+// cleanBoxContents removes all files and directories inside the box, but keeps the box structure intact.
+func cleanBoxContents(boxPath string) error {
+	boxDir := filepath.Join(boxPath, "box")
+
+	if _, err := os.Stat(boxDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	entries, err := os.ReadDir(boxDir)
+	if err != nil {
+		return fmt.Errorf("read box directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		entryPath := filepath.Join(boxDir, entry.Name())
+		if err := os.RemoveAll(entryPath); err != nil {
+			return fmt.Errorf("remove %s: %w", entryPath, err)
+		}
+	}
+
+	return nil
+}
+
+func setupFiles(job *models.Job, boxPath string) (models.JobPaths, error) {
 	boxDir := filepath.Join(boxPath, "box")
 	sourcePath := filepath.Join(boxDir, job.Language.SourceFile)
 	stdinPath := filepath.Join(boxDir, "stdin")
@@ -144,13 +248,13 @@ func setupFiles(job *core.Job, boxPath string) (jobPaths, error) {
 	compileOutputPath := filepath.Join(boxDir, "compile_output")
 
 	if err := os.WriteFile(sourcePath, []byte(job.SourceCode), 0o644); err != nil {
-		return jobPaths{}, fmt.Errorf("write source: %w", err)
+		return models.JobPaths{}, fmt.Errorf("write source: %w", err)
 	}
 	if err := os.WriteFile(stdinPath, []byte(job.Stdin), 0o644); err != nil {
-		return jobPaths{}, fmt.Errorf("write stdin: %w", err)
+		return models.JobPaths{}, fmt.Errorf("write stdin: %w", err)
 	}
 
-	return jobPaths{
+	return models.JobPaths{
 		BoxPath:           boxPath,
 		MetadataPath:      metadataPath,
 		StdoutPath:        stdoutPath,
@@ -160,26 +264,39 @@ func setupFiles(job *core.Job, boxPath string) (jobPaths, error) {
 	}, nil
 }
 
-func compileJob(ctx context.Context, job *core.Job, boxID uint64, paths jobPaths) (core.JobStatus, error) {
+func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models.JobPaths) (models.JobStatus, error) {
 	parts := strings.Fields(job.Language.CompileCmd)
 	if len(parts) == 0 {
-		return core.JobStatus{Kind: core.StatusInternalError}, errors.New("compile command is empty")
+		return models.JobStatus{Kind: models.StatusInternalError}, errors.New("compile command is empty")
 	}
-	compileExe := parts[0]
-	compileArgs := strings.Join(parts[1:], " ")
-	cmdStr := fmt.Sprintf("%s %s 2> /box/compile_output", compileExe, compileArgs)
 
-	args := []string{
-		"--cg",
-		"-b", strconv.FormatUint(boxID, 10),
+	sb := utils.GetStringBuilder()
+	sb.WriteString(parts[0])
+	for i := 1; i < len(parts); i++ {
+		sb.WriteByte(' ')
+		sb.WriteString(parts[i])
+	}
+	sb.WriteString(" 2> /box/compile_output")
+	cmdStr := sb.String()
+	utils.PutStringBuilder(sb)
+
+	boxIDStr := strconv.FormatUint(boxID, 10)
+	processStr := strconv.FormatUint(uint64(job.Settings.MaxProcesses), 10)
+	cpuTimeStr := strconv.FormatFloat(job.Settings.CPUTimeLimit, 'g', -1, 64)
+	wallTimeStr := strconv.FormatFloat(job.Settings.WallTimeLimit, 'g', -1, 64)
+	stackStr := strconv.FormatUint(job.Settings.StackLimit, 10)
+	fileSizeStr := strconv.FormatUint(job.Settings.MaxFileSize, 10)
+
+	args := make([]string, 0, 22)
+	args = append(args,
+		"-b", boxIDStr,
 		"-M", paths.MetadataPath,
-		fmt.Sprintf("--process=%d", job.Settings.MaxProcesses),
-		"-t", "5",
+		"--process="+processStr,
+		"-t", cpuTimeStr,
 		"-x", "0",
-		"-w", "10",
-		"-k", fmt.Sprintf("%d", job.Settings.StackLimit),
-		"-f", fmt.Sprintf("%d", job.Settings.MaxFileSize),
-		fmt.Sprintf("--cg-mem=%d", job.Settings.MemoryLimit),
+		"-w", wallTimeStr,
+		"-k", stackStr,
+		"-f", fileSizeStr,
 		"-E", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"-E", "HOME=/tmp",
 		"-d", "/etc:noexec",
@@ -188,10 +305,10 @@ func compileJob(ctx context.Context, job *core.Job, boxID uint64, paths jobPaths
 		"/usr/bin/sh",
 		"-c",
 		cmdStr,
-	}
+	)
 
 	output, err := exec.CommandContext(ctx, isolatePath, args...).CombinedOutput()
-	compileOutput := readFileIfExists(paths.CompileOutputPath)
+	compileOutput := utils.ReadFileIfExists(paths.CompileOutputPath)
 	if compileOutput != "" {
 		job.Output.CompileOutput = compileOutput
 	}
@@ -200,32 +317,45 @@ func compileJob(ctx context.Context, job *core.Job, boxID uint64, paths jobPaths
 		if compileOutput == "" {
 			job.Output.CompileOutput = strings.TrimSpace(string(output))
 		}
-		return core.JobStatus{Kind: core.StatusCompilationError}, nil
+		return models.JobStatus{Kind: models.StatusCompilationError}, nil
 	}
 
-	return core.JobStatus{Kind: core.StatusAccepted}, nil
+	return models.JobStatus{Kind: models.StatusAccepted}, nil
 }
 
-func runJob(ctx context.Context, job *core.Job, boxID uint64, paths jobPaths) error {
+func runJob(ctx context.Context, job *models.Job, boxID uint64, paths models.JobPaths) error {
 	parts := strings.Fields(job.Language.RunCmd)
 	if len(parts) == 0 {
 		return errors.New("run command is empty")
 	}
-	runExe := parts[0]
-	runArgs := strings.Join(parts[1:], " ")
-	cmdStr := fmt.Sprintf("%s %s > /box/stdout 2> /box/stderr", runExe, runArgs)
 
-	args := []string{
-		"--cg",
-		"-b", strconv.FormatUint(boxID, 10),
+	sb := utils.GetStringBuilder()
+	sb.WriteString(parts[0])
+	for i := 1; i < len(parts); i++ {
+		sb.WriteByte(' ')
+		sb.WriteString(parts[i])
+	}
+	sb.WriteString(" > /box/stdout 2> /box/stderr")
+	cmdStr := sb.String()
+	utils.PutStringBuilder(sb)
+
+	boxIDStr := strconv.FormatUint(boxID, 10)
+	processStr := strconv.FormatUint(uint64(job.Settings.MaxProcesses), 10)
+	cpuTimeStr := strconv.FormatFloat(job.Settings.CPUTimeLimit, 'g', -1, 64)
+	wallTimeStr := strconv.FormatFloat(job.Settings.WallTimeLimit, 'g', -1, 64)
+	stackStr := strconv.FormatUint(job.Settings.StackLimit, 10)
+	fileSizeStr := strconv.FormatUint(job.Settings.MaxFileSize, 10)
+
+	args := make([]string, 0, 22)
+	args = append(args,
+		"-b", boxIDStr,
 		"-M", paths.MetadataPath,
-		fmt.Sprintf("--process=%d", job.Settings.MaxProcesses),
-		"-t", fmt.Sprintf("%g", job.Settings.CPUTimeLimit),
+		"--process="+processStr,
+		"-t", cpuTimeStr,
 		"-x", "0",
-		"-w", fmt.Sprintf("%g", job.Settings.WallTimeLimit),
-		"-k", fmt.Sprintf("%d", job.Settings.StackLimit),
-		"-f", fmt.Sprintf("%d", job.Settings.MaxFileSize),
-		fmt.Sprintf("--cg-mem=%d", job.Settings.MemoryLimit),
+		"-w", wallTimeStr,
+		"-k", stackStr,
+		"-f", fileSizeStr,
 		"-E", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"-E", "HOME=/tmp",
 		"-d", "/etc:noexec",
@@ -234,7 +364,7 @@ func runJob(ctx context.Context, job *core.Job, boxID uint64, paths jobPaths) er
 		"/usr/bin/sh",
 		"-c",
 		cmdStr,
-	}
+	)
 
 	cmd := exec.CommandContext(ctx, isolatePath, args...)
 	stdinFile, err := os.Open(paths.StdinPath)
@@ -254,98 +384,13 @@ func runJob(ctx context.Context, job *core.Job, boxID uint64, paths jobPaths) er
 	return nil
 }
 
-func readOutputs(job *core.Job, paths jobPaths) error {
-	job.Output.Stdout = readFileIfExists(paths.StdoutPath)
-	job.Output.Stderr = readFileIfExists(paths.StderrPath)
-	if job.Output.CompileOutput == "" {
-		job.Output.CompileOutput = readFileIfExists(paths.CompileOutputPath)
+func readOutputs(job *models.Job, paths models.JobPaths) error {
+	job.Output.Stdout = utils.ReadFileIfExists(paths.StdoutPath)
+	job.Output.Stderr = utils.ReadFileIfExists(paths.StderrPath)
+	if job.Output.CompileOutput == "" && job.Language.CompileCmd != "" {
+		job.Output.CompileOutput = utils.ReadFileIfExists(paths.CompileOutputPath)
+	} else if job.Language.CompileCmd == "" {
+		job.Output.CompileOutput = ""
 	}
 	return nil
-}
-
-type metadata struct {
-	Time     float64
-	Memory   uint64
-	ExitCode int
-	Message  string
-	Status   string
-}
-
-func readMetadata(path string) (metadata, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return metadata{}, fmt.Errorf("read metadata: %w", err)
-	}
-	lines := strings.Split(string(content), "\n")
-	meta := metadata{}
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		switch key {
-		case "time":
-			meta.Time, _ = strconv.ParseFloat(value, 64)
-		case "max-rss", "cg-mem":
-			mem, _ := strconv.ParseUint(value, 10, 64)
-			if mem > meta.Memory {
-				meta.Memory = mem
-			}
-		case "exitcode":
-			exit, _ := strconv.Atoi(value)
-			meta.ExitCode = exit
-		case "message":
-			meta.Message = value
-		case "status":
-			meta.Status = value
-		}
-	}
-	return meta, nil
-}
-
-func determineStatus(status string, exitCode int, stdout, expected string) core.JobStatus {
-	switch status {
-	case "TO":
-		return core.JobStatus{Kind: core.StatusTimeLimitExceeded}
-	case "SG":
-		return core.RuntimeErrorStatus(runtimeSignal(exitCode))
-	case "RE":
-		return core.RuntimeErrorStatus("NZEC")
-	case "XX":
-		return core.JobStatus{Kind: core.StatusInternalError}
-	default:
-		if expected == "" || strings.TrimSpace(stdout) == strings.TrimSpace(expected) {
-			return core.JobStatus{Kind: core.StatusAccepted}
-		}
-		return core.JobStatus{Kind: core.StatusWrongAnswer}
-	}
-}
-
-func runtimeSignal(exitCode int) string {
-	switch exitCode {
-	case 11:
-		return "SIGSEGV"
-	case 25:
-		return "SIGXFSZ"
-	case 8:
-		return "SIGFPE"
-	case 6:
-		return "SIGABRT"
-	default:
-		return "Other"
-	}
-}
-
-func readFileIfExists(path string) string {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(content)
 }

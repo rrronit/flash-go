@@ -1,19 +1,12 @@
 package core
 
-// Language describes how to compile and run a job.
-type Language struct {
-	Name       string `json:"name"`
-	SourceFile string `json:"source_file"`
-	CompileCmd string `json:"compile_cmd"`
-	RunCmd     string `json:"run_cmd"`
-	IsCompiled bool   `json:"is_compiled"`
-}
+import "flash-go/internal/models"
 
 // LanguageFor returns the language configuration for a given name.
-func LanguageFor(name string) (Language, bool) {
+func LanguageFor(name string) (models.Language, bool) {
 	switch name {
 	case "python":
-		return Language{
+		return models.Language{
 			Name:       "python",
 			SourceFile: "main.py",
 			CompileCmd: "",
@@ -21,7 +14,7 @@ func LanguageFor(name string) (Language, bool) {
 			IsCompiled: false,
 		}, true
 	case "cpp":
-		return Language{
+		return models.Language{
 			Name:       "cpp",
 			SourceFile: "main.cpp",
 			CompileCmd: "/usr/bin/g++ -O0 -Wall -Wextra -Werror -Wpedantic -Wfatal-errors main.cpp",
@@ -29,7 +22,7 @@ func LanguageFor(name string) (Language, bool) {
 			IsCompiled: true,
 		}, true
 	case "javascript":
-		return Language{
+		return models.Language{
 			Name:       "javascript",
 			SourceFile: "main.js",
 			CompileCmd: "",
@@ -37,16 +30,30 @@ func LanguageFor(name string) (Language, bool) {
 			IsCompiled: false,
 		}, true
 	case "java":
-		return Language{
+		return models.Language{
 			Name:       "java",
 			SourceFile: "Main.java",
 			CompileCmd: "/usr/bin/javac Main.java",
 			RunCmd:     "/usr/bin/java Main",
 			IsCompiled: false,
 		}, true
-	
+	case "csharp":
+		return models.Language{
+			Name:       "csharp",
+			SourceFile: "main.cs",
+			CompileCmd: "/usr/bin/mcs -optimize+ -out:main.exe main.cs",
+			RunCmd:     "/usr/bin/mono main.exe",
+			IsCompiled: true,
+		}, true
+	case "go":
+		return models.Language{
+			Name:       "go",
+			SourceFile: "main.go",
+			CompileCmd: "GO111MODULE=off /usr/bin/go build -o main main.go",
+			RunCmd:     "./main",
+			IsCompiled: true,
+		}, true
 	default:
-		return Language{}, false
+		return models.Language{}, false
 	}
 }
-
