@@ -123,3 +123,8 @@ func findRuntimeType(exitCode int) models.JobStatus {
 		return models.JobStatus{Kind: models.StatusRuntimeError, RuntimeCode: "Other"}
 	}
 }
+
+func DetectCgroupSupport() bool {
+    _, err := os.Stat("/sys/fs/cgroup")
+    return err == nil
+}

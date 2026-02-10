@@ -19,8 +19,8 @@ import (
 const (
 	isolatePath = "isolate"
 	boxModulo   = 2147483647
-	useCgroup   = false 
 )
+var useCgroup = utils.DetectCgroupSupport()
 
 type boxHandle struct {
 	id   uint64
@@ -370,6 +370,11 @@ func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models
 	if err != nil {
 		if compileOutput == "" {
 			job.Output.CompileOutput = strings.TrimSpace(string(output))
+		}
+		if job.Output.CompileOutput != "" {
+			job.Output.Message = job.Output.CompileOutput
+		} else {
+			job.Output.Message = "Compilation failed"
 		}
 		return models.JobStatus{Kind: models.StatusCompilationError}, nil
 	}
