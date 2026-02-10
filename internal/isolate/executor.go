@@ -293,14 +293,7 @@ func getCgroupFlags(job *models.Job) []string {
 		flags = append(flags, "-m", strconv.FormatUint(job.Settings.MemoryLimit, 10))
 		return flags
 	}
-	
-	// Handle timing flags
-	if job.Settings.EnablePerProcessAndThreadTimeLimit {
-		flags = append(flags, "--no-cg-timing")
-	} else {
-		flags = append(flags, "--cg-timing")
-	}
-	
+
 	if job.Settings.EnablePerProcessAndThreadMemoryLimit {
 		flags = append(flags, "-m", strconv.FormatUint(job.Settings.MemoryLimit, 10))
 	} else {
