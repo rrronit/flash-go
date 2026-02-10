@@ -150,31 +150,31 @@ func (h *Handler) Check(c *gin.Context) {
 	})
 }
 
-// Health returns a simple health response.
+// Health returns service health with queue stats and jobs run count.
 func (h *Handler) Health(c *gin.Context) {
-	queueLength, err := h.redis.QueueLength(c.Request.Context(), false)
+	ctx := c.Request.Context()
+
+	mainQueueLength, err := h.redis.QueueLength(ctx, false)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": "failed to check queue length"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": "main queue length check failed"})
 		return
 	}
-	freeQueueLength, err := h.redis.QueueLength(c.Request.Context(), true)
+	freeQueueLength, err := h.redis.QueueLength(ctx, true)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": "failed to check free queue length"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": "free queue length check failed"})
 		return
 	}
 
 	response := gin.H{
-		"status":             "ok",
-		"queued_jobs":        queueLength,
-		"queue_limit":        h.queueLengthLimit,
-		"worker_concurrency": h.workerConcurrency,
-		"box_pool":           h.useBoxPool,
-		"free_queued_jobs":   freeQueueLength,
-		"free_queue_limit":   h.queueLengthLimit,
-	}
-	if h.queueLengthLimit > 0 {
-		response["queue_available"] = h.queueLengthLimit - queueLength
-		response["queue_utilization"] = float64(queueLength) / float64(h.queueLengthLimit)
+		"status":              "ok",
+		"main_queue_length":   mainQueueLength,
+		"main_queue_limit":    h.queueLengthLimit,
+		"free_queue_length":   freeQueueLength,
+		"free_queue_limit":    h.queueLengthLimit,
+		"worker_concurrency":  h.workerConcurrency,
+		"use_box_pool":        h.useBoxPool,
+		"main_queue_available": h.queueLengthLimit - mainQueueLength,
+		"free_queue_available": h.queueLengthLimit - freeQueueLength,
 	}
 
 	c.JSON(http.StatusOK, response)

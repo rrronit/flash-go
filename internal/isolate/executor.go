@@ -321,9 +321,9 @@ func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models
 
 	boxIDStr := strconv.FormatUint(boxID, 10)
 	processStr := strconv.FormatUint(uint64(job.Settings.MaxProcesses), 10)
-	cpuTimeStr := strconv.FormatFloat(job.Settings.CPUTimeLimit, 'g', -1, 64)
-	wallTimeStr := strconv.FormatFloat(job.Settings.WallTimeLimit, 'g', -1, 64)
-	stackStr := strconv.FormatUint(job.Settings.StackLimit, 10)
+	cpuTimeStr := strconv.FormatFloat(job.Settings.MaxCPUTimeLimit, 'g', -1, 64)
+	wallTimeStr := strconv.FormatFloat(job.Settings.MaxWallTimeLimit, 'g', -1, 64)
+	stackStr := strconv.FormatUint(job.Settings.MaxStackLimit, 10)
 	fileSizeStr := strconv.FormatUint(job.Settings.MaxFileSize, 10)
 
 	args := make([]string, 0, 30)

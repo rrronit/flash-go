@@ -111,9 +111,12 @@ type Language struct {
 
 // ExecutionSettings defines resource limits for a job.
 type ExecutionSettings struct {
+	MaxCPUTimeLimit float64 `json:"max_cpu_time_limit"`
 	CPUTimeLimit  float64 `json:"cpu_time_limit"`
 	WallTimeLimit float64 `json:"wall_time_limit"`
+	MaxWallTimeLimit float64 `json:"max_wall_time_limit"`
 	MemoryLimit   uint64  `json:"memory_limit"`
+	MaxStackLimit uint64  `json:"max_stack_limit"`
 	StackLimit    uint64  `json:"stack_limit"`
 	MaxProcesses  uint32  `json:"max_processes"`
 	MaxFileSize   uint64  `json:"max_file_size"`
