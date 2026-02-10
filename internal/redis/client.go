@@ -46,7 +46,7 @@ func (c *Client) CreateFreeJob(ctx context.Context, job *models.Job) error {
 	return c.enqueueJob(ctx, job, freeJobQueueName)
 }
 
-func (c *Client) enqueueJob(ctx context.Context, job *models.Job, queueName string) error {
+func (c *Client) enqueueJob(_ context.Context, job *models.Job, queueName string) error {
 	payload, err := utils.MarshalJob(job)
 	if err != nil {
 		logrus.WithError(err).WithFields(logrus.Fields{
@@ -56,10 +56,11 @@ func (c *Client) enqueueJob(ctx context.Context, job *models.Job, queueName stri
 		return err
 	}
 	key := utils.JobKey(job.ID)
+	enqueueCtx := context.Background()
 	pipe := c.rdb.TxPipeline()
-	pipe.Set(ctx, key, payload, jobTTL)
-	pipe.RPush(ctx, queueName, strconv.FormatUint(job.ID, 10))
-	_, err = pipe.Exec(ctx)
+	pipe.Set(enqueueCtx, key, payload, jobTTL)
+	pipe.RPush(enqueueCtx, queueName, strconv.FormatUint(job.ID, 10))
+	_, err = pipe.Exec(enqueueCtx)
 	if err != nil {
 		logrus.WithError(err).WithFields(logrus.Fields{
 			"job_id": job.ID,
