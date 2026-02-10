@@ -28,7 +28,7 @@ func New(redisClient *redis.Client) *Worker {
 }
 
 func (w *Worker) Start(ctx context.Context, concurrency int, useBoxPool bool) {
-	poolSize := concurrency
+	poolSize := concurrency * 2
 	if poolSize < 1 {
 		poolSize = 1
 	}

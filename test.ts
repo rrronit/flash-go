@@ -1,18 +1,18 @@
 import { cppCode, expected, pythonCode, stdin } from "./data";
 
-const BASE_URL_JUDGE0 = "http://localhost:2358";
-const BASE_URL_FLASH_GO = "http://localhost:3002";
-const CONCURRENCY = 1;
-const TOTAL_SUBMISSIONS = 1;
-const RUNS = 100;
-const WARMUP_RUNS = 0;
+const BASE_URL_FLASH_RS = "http://localhost:3002";
+const BASE_URL_FLASH_GO = "http://localhost:3001";
+const CONCURRENCY = 60;
+const TOTAL_SUBMISSIONS = 100;
+const RUNS = 10;
+const WARMUP_RUNS = 1;
 
-const LANGUAGE = 71;
-const CODE = pythonCode;
+const LANGUAGE = 54;
+const CODE = cppCode;
 const INPUT = stdin;
 const EXPECTED = expected;
 const TIME_LIMIT = 1.0;
-const MEMORY_LIMIT = 128000;
+const MEMORY_LIMIT = 100000;
 const STACK_LIMIT = 64000;
 
 const CHECK_INTERVAL_MS = 100;
@@ -72,7 +72,7 @@ async function submitJob(
   const response = await fetch(`${baseUrl}/submissions/batch?base64_encoded=true`, {
     method: "POST",
     headers: getHeaders(baseUrl),
-    body: JSON.stringify({ submissions: [payload], free: true }),
+    body: JSON.stringify({ submissions: [payload], free: false }),
   });
   if (!response.ok) {
     const text = await response.text();
@@ -101,6 +101,7 @@ async function fetchResult(
     throw new Error(`check ${jobId} failed: ${response.status} ${text}`);
   }
   const json = (await response.json()) as { submissions?: CheckResponse[] };
+
   const result = json.submissions?.[0];
   if (!result) {
     throw new Error(`check ${jobId} failed: invalid batch response`);
@@ -334,14 +335,15 @@ async function runBenchmark(
 
 async function main(): Promise<void> {
   const benchmarks = [
+    { label: "flash-rs", baseUrl: BASE_URL_FLASH_RS, multiplier: 1 },
     { label: "flash-go", baseUrl: BASE_URL_FLASH_GO, multiplier: 1 },
-    // { label: "judge0", baseUrl: BASE_URL_JUDGE0, multiplier: 1 },
 
   ];
 
   const summaries: BenchmarkSummary[] = [];
 
   for (const benchmark of benchmarks) {
+    new Promise((resolve) => setTimeout(resolve, 5000));
     summaries.push(await runBenchmark(benchmark.label, benchmark.baseUrl, benchmark.multiplier));
   }
 

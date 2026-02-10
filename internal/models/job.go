@@ -118,6 +118,9 @@ type ExecutionSettings struct {
 	MaxProcesses  uint32  `json:"max_processes"`
 	MaxFileSize   uint64  `json:"max_file_size"`
 	EnableNetwork bool    `json:"enable_network"`
+	EnablePerProcessAndThreadTimeLimit    bool    `json:"enable_per_process_and_thread_time_limit,omitempty"`
+	EnablePerProcessAndThreadMemoryLimit  bool    `json:"enable_per_process_and_thread_memory_limit,omitempty"`
+	RedirectStderrToStdout                bool    `json:"redirect_stderr_to_stdout,omitempty"`
 }
 
 // Job represents a unit of work in the judge.

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -35,7 +36,7 @@ func ReadFileIfExists(path string) string {
 	buf := GetBuffer()
 	defer PutBuffer(buf)
 
-	_, err = buf.ReadFrom(file)
+	_, err = io.Copy(buf, file)
 	if err != nil {
 		return ""
 	}

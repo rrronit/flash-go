@@ -35,7 +35,7 @@ func LanguageFor(name string) (models.Language, bool) {
 			SourceFile: "Main.java",
 			CompileCmd: "/usr/bin/javac Main.java",
 			RunCmd:     "/usr/bin/java Main",
-			IsCompiled: false,
+			IsCompiled: true,
 		}, true
 	case "csharp":
 		return models.Language{

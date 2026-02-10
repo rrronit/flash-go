@@ -19,6 +19,7 @@ import (
 const (
 	isolatePath = "isolate"
 	boxModulo   = 2147483647
+	useCgroup   = false 
 )
 
 type boxHandle struct {
@@ -187,7 +188,14 @@ func (e *Executor) Cleanup(jobID uint64) {
 	}
 	boxID := jobID % boxModulo
 	boxIDStr := strconv.FormatUint(boxID, 10)
-	cmd := exec.Command(isolatePath, "-b", boxIDStr, "--cleanup")
+	
+	args := []string{"-b", boxIDStr}
+	if useCgroup {
+		args = append([]string{"--cg"}, args...)
+	}
+	args = append(args, "--cleanup")
+	
+	cmd := exec.Command(isolatePath, args...)
 	_ = cmd.Start()
 	go func() {
 		_ = cmd.Wait()
@@ -199,11 +207,23 @@ func (e *Executor) CleanupSync(jobID uint64) {
 		return
 	}
 	boxID := jobID % boxModulo
-	_ = exec.Command(isolatePath, "-b", strconv.FormatUint(boxID, 10), "--cleanup").Run()
+	
+	args := []string{"-b", strconv.FormatUint(boxID, 10)}
+	if useCgroup {
+		args = append([]string{"--cg"}, args...)
+	}
+	args = append(args, "--cleanup")
+	
+	_ = exec.Command(isolatePath, args...).Run()
 }
 
 func initBox(ctx context.Context, boxID uint64) (string, error) {
-	cmd := exec.CommandContext(ctx, isolatePath, "-b", strconv.FormatUint(boxID, 10), "--init")
+	args := []string{"-b", strconv.FormatUint(boxID, 10), "--init"}
+	if useCgroup {
+		args = append([]string{"--cg"}, args...)
+	}
+	
+	cmd := exec.CommandContext(ctx, isolatePath, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("isolate init failed: %w (%s)", err, strings.TrimSpace(string(output)))
@@ -264,6 +284,32 @@ func setupFiles(job *models.Job, boxPath string) (models.JobPaths, error) {
 	}, nil
 }
 
+// getCgroupFlags returns cgroup-related flags based on job settings
+func getCgroupFlags(job *models.Job) []string {
+	flags := []string{}
+
+
+	if !useCgroup {
+		flags = append(flags, "-m", strconv.FormatUint(job.Settings.MemoryLimit, 10))
+		return flags
+	}
+	
+	// Handle timing flags
+	if job.Settings.EnablePerProcessAndThreadTimeLimit {
+		flags = append(flags, "--no-cg-timing")
+	} else {
+		flags = append(flags, "--cg-timing")
+	}
+	
+	if job.Settings.EnablePerProcessAndThreadMemoryLimit {
+		flags = append(flags, "-m", strconv.FormatUint(job.Settings.MemoryLimit, 10))
+	} else {
+		flags = append(flags, "--cg-mem="+strconv.FormatUint(job.Settings.MemoryLimit, 10))
+	}
+	
+	return flags
+}
+
 func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models.JobPaths) (models.JobStatus, error) {
 	parts := strings.Fields(job.Language.CompileCmd)
 	if len(parts) == 0 {
@@ -287,10 +333,18 @@ func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models
 	stackStr := strconv.FormatUint(job.Settings.StackLimit, 10)
 	fileSizeStr := strconv.FormatUint(job.Settings.MaxFileSize, 10)
 
-	args := make([]string, 0, 22)
+	args := make([]string, 0, 30)
+	
+	if useCgroup {
+		args = append(args, "--cg")
+	}
+	
 	args = append(args,
+		"-s",
 		"-b", boxIDStr,
 		"-M", paths.MetadataPath,
+		"--stderr-to-stdout",
+		"-i", "/dev/null",
 		"--process="+processStr,
 		"-t", cpuTimeStr,
 		"-x", "0",
@@ -300,6 +354,13 @@ func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models
 		"-E", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"-E", "HOME=/tmp",
 		"-d", "/etc:noexec",
+	)
+	
+	// Add cgroup-specific flags
+	cgFlags := getCgroupFlags(job)
+	args = append(args, cgFlags...)
+	
+	args = append(args,
 		"--run",
 		"--",
 		"/usr/bin/sh",
@@ -346,10 +407,27 @@ func runJob(ctx context.Context, job *models.Job, boxID uint64, paths models.Job
 	stackStr := strconv.FormatUint(job.Settings.StackLimit, 10)
 	fileSizeStr := strconv.FormatUint(job.Settings.MaxFileSize, 10)
 
-	args := make([]string, 0, 22)
+	args := make([]string, 0, 30)
+	
+	if useCgroup {
+		args = append(args, "--cg")
+	}
+	
 	args = append(args,
+		"-s",
 		"-b", boxIDStr,
 		"-M", paths.MetadataPath,
+	)
+	
+	if job.Settings.RedirectStderrToStdout {
+		args = append(args, "--stderr-to-stdout")
+	}
+	
+	if job.Settings.EnableNetwork {
+		args = append(args, "--share-net")
+	}
+	
+	args = append(args,
 		"--process="+processStr,
 		"-t", cpuTimeStr,
 		"-x", "0",
@@ -359,6 +437,12 @@ func runJob(ctx context.Context, job *models.Job, boxID uint64, paths models.Job
 		"-E", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"-E", "HOME=/tmp",
 		"-d", "/etc:noexec",
+	)
+	
+	cgFlags := getCgroupFlags(job)
+	args = append(args, cgFlags...)
+	
+	args = append(args,
 		"--run",
 		"--",
 		"/usr/bin/sh",

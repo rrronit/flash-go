@@ -3,22 +3,21 @@ package main
 import (
 	"context"
 	"log"
-	"os"
 	"runtime"
-	"strconv"
 
 	"flash-go/internal/api"
 	"flash-go/internal/redis"
+	"flash-go/internal/utils"
 	"flash-go/internal/worker"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	redisURL := getenv("REDIS_URL", "redis://127.0.0.1/")
-	port := getenv("PORT", "3001")
-	useBoxPool := getenv("USE_BOX_POOL", "true") == "true"
-	queueLengthLimit := getenvInt("QUEUE_LENGTH_LIMIT", 1000)
+	redisURL := utils.EnvString("REDIS_URL", "redis://127.0.0.1/")
+	port := utils.EnvString("PORT", "3001")
+	useBoxPool := utils.EnvBool("USE_BOX_POOL", false)
+	queueLengthLimit := utils.EnvInt("QUEUE_LENGTH_LIMIT", 1000)
 
 	redisClient, err := redis.New(redisURL)
 	if err != nil {
@@ -26,13 +25,15 @@ func main() {
 	}
 
 	ctx := context.Background()
-	concurrency := runtime.NumCPU() * 2
+	concurrency := runtime.NumCPU() * 4
 
 	go func() {
 		worker.New(redisClient).Start(ctx, concurrency, useBoxPool)
 	}()
 
-	router := gin.Default()
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	router.Use(gin.Recovery())
 	api.RegisterRoutes(router, api.NewHandler(redisClient, queueLengthLimit, concurrency, useBoxPool))
 
 	addr := ":" + port
@@ -40,23 +41,4 @@ func main() {
 	if err := router.Run(addr); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
-}
-
-func getenv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getenvInt(key string, fallback int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return n
 }
