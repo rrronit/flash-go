@@ -85,5 +85,5 @@ type Judge0SubmissionDetails struct {
 
 // Judge0BatchResponse represents the response for a batch query.
 type Judge0BatchResponse struct {
-	Submissions []Judge0SubmissionDetails `json:"submissions"`
+	Submissions []*Judge0SubmissionDetails `json:"submissions"`
 }

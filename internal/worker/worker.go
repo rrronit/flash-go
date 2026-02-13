@@ -37,11 +37,24 @@ func (w *Worker) Start(ctx context.Context, concurrency int, useBoxPool bool) {
 	}
 
 	for i := 0; i < concurrency; i++ {
-		go w.runLoop(ctx, i)
+		go w.runLoopWithRecover(ctx, i)
 	}
 
 	<-ctx.Done()
 	logrus.Info("worker shutdown initiated")
+}
+
+func (w *Worker) runLoopWithRecover(ctx context.Context, idx int) {
+	defer func() {
+		if r := recover(); r != nil {
+			logrus.WithFields(logrus.Fields{
+				"worker_id": idx,
+				"panic":     r,
+			}).Error("worker panic, respawning")
+			go w.runLoopWithRecover(ctx, idx)
+		}
+	}()
+	w.runLoop(ctx, idx)
 }
 
 func (w *Worker) runLoop(ctx context.Context, idx int) {

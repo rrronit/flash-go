@@ -116,6 +116,7 @@ type ExecutionSettings struct {
 	WallTimeLimit float64 `json:"wall_time_limit"`
 	MaxWallTimeLimit float64 `json:"max_wall_time_limit"`
 	MemoryLimit   uint64  `json:"memory_limit"`
+	MaxMemoryLimit uint64  `json:"max_memory_limit"`
 	MaxStackLimit uint64  `json:"max_stack_limit"`
 	StackLimit    uint64  `json:"stack_limit"`
 	MaxProcesses  uint32  `json:"max_processes"`

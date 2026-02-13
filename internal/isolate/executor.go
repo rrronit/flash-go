@@ -14,6 +14,8 @@ import (
 
 	"flash-go/internal/models"
 	"flash-go/internal/utils"
+
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -101,6 +103,7 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 			job.Status = models.JobStatus{Kind: models.StatusInternalError}
 			job.Output.Message = err.Error()
 			job.FinishedAt = time.Now().UnixNano()
+			logFailedJob("failed to acquire box", job, boxID)
 			return job.Status, err
 		}
 		defer e.releaseBox(box)
@@ -109,6 +112,7 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 			job.Status = models.JobStatus{Kind: models.StatusInternalError}
 			job.Output.Message = fmt.Sprintf("failed to clean box: %v", err)
 			job.FinishedAt = time.Now().UnixNano()
+			logFailedJob("failed to clean box contents", job, box.id)
 			return job.Status, err
 		}
 
@@ -121,6 +125,7 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 			job.Status = models.JobStatus{Kind: models.StatusInternalError}
 			job.Output.Message = err.Error()
 			job.FinishedAt = time.Now().UnixNano()
+			logFailedJob("failed to init box", job, boxID)
 			return job.Status, err
 		}
 	}
@@ -130,6 +135,7 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 		job.Status = models.JobStatus{Kind: models.StatusInternalError}
 		job.Output.Message = err.Error()
 		job.FinishedAt = time.Now().UnixNano()
+		logFailedJob("failed to setup files", job, boxID)
 		return job.Status, err
 	}
 
@@ -139,11 +145,22 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 			job.Status = models.JobStatus{Kind: models.StatusInternalError}
 			job.Output.Message = compileErr.Error()
 			job.FinishedAt = time.Now().UnixNano()
+			logFailedJob("compile step returned internal error", job, boxID)
 			return job.Status, compileErr
 		}
 		if compileStatus.Kind == models.StatusCompilationError {
+			logrus.WithFields(logrus.Fields{
+				"job_id":              job.ID,
+				"box_id":              boxID,
+				"status":              compileStatus.Kind,
+				"compile_output_len":  len(job.Output.CompileOutput),
+				"compile_output_head": previewForLog(job.Output.CompileOutput, 220),
+				"message_len":         len(job.Output.Message),
+				"message_head":        previewForLog(job.Output.Message, 220),
+			}).Warn("compile step failed")
 			job.Status = compileStatus
 			job.FinishedAt = time.Now().UnixNano()
+			logFailedJob("compilation failed", job, boxID)
 			return job.Status, nil
 		}
 	}
@@ -153,6 +170,7 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 		job.Status = models.JobStatus{Kind: models.StatusInternalError}
 		job.Output.Message = runErr.Error()
 		job.FinishedAt = time.Now().UnixNano()
+		logFailedJob("run step returned internal error", job, boxID)
 		return job.Status, runErr
 	}
 
@@ -160,6 +178,7 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 		job.Status = models.JobStatus{Kind: models.StatusInternalError}
 		job.Output.Message = err.Error()
 		job.FinishedAt = time.Now().UnixNano()
+		logFailedJob("failed to read outputs", job, boxID)
 		return job.Status, err
 	}
 
@@ -168,6 +187,7 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 		job.Status = models.JobStatus{Kind: models.StatusInternalError}
 		job.Output.Message = err.Error()
 		job.FinishedAt = time.Now().UnixNano()
+		logFailedJob("failed to read metadata", job, boxID)
 		return job.Status, err
 	}
 
@@ -178,7 +198,9 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 
 	job.Status = utils.DetermineStatus(meta.Status, meta.ExitCode, job.Output.Stdout, job.ExpectedOutput)
 	job.FinishedAt = time.Now().UnixNano()
-
+	if job.Status.Kind != models.StatusAccepted {
+		logFailedJob("job finished with non-accepted status", job, boxID)
+	}
 	return job.Status, nil
 }
 
@@ -285,21 +307,21 @@ func setupFiles(job *models.Job, boxPath string) (models.JobPaths, error) {
 }
 
 // getCgroupFlags returns cgroup-related flags based on job settings
-func getCgroupFlags(job *models.Job) []string {
+func getCgroupFlags(job *models.Job, memoryLimit uint64) []string {
 	flags := []string{}
 
 
 	if !useCgroup {
-		flags = append(flags, "-m", strconv.FormatUint(job.Settings.MemoryLimit, 10))
+		flags = append(flags, "-m", strconv.FormatUint(memoryLimit, 10))
 		return flags
 	}
 
 	if job.Settings.EnablePerProcessAndThreadMemoryLimit {
-		flags = append(flags, "-m", strconv.FormatUint(job.Settings.MemoryLimit, 10))
+		flags = append(flags, "-m", strconv.FormatUint(memoryLimit, 10))
 	} else {
-		flags = append(flags, "--cg-mem="+strconv.FormatUint(job.Settings.MemoryLimit, 10))
+		flags = append(flags, "--cg-mem="+strconv.FormatUint(memoryLimit, 10))
 	}
-	
+
 	return flags
 }
 
@@ -326,19 +348,19 @@ func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models
 	stackStr := strconv.FormatUint(job.Settings.MaxStackLimit, 10)
 	fileSizeStr := strconv.FormatUint(job.Settings.MaxFileSize, 10)
 
-	args := make([]string, 0, 30)
-	
+	args := make([]string, 0, 40)
+
 	if useCgroup {
 		args = append(args, "--cg")
 	}
-	
+
 	args = append(args,
 		"-s",
 		"-b", boxIDStr,
 		"-M", paths.MetadataPath,
 		"--stderr-to-stdout",
 		"-i", "/dev/null",
-		"--process="+processStr,
+		"--processes="+processStr,
 		"-t", cpuTimeStr,
 		"-x", "0",
 		"-w", wallTimeStr,
@@ -348,11 +370,10 @@ func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models
 		"-E", "HOME=/tmp",
 		"-d", "/etc:noexec",
 	)
-	
-	// Add cgroup-specific flags
-	cgFlags := getCgroupFlags(job)
+
+	cgFlags := getCgroupFlags(job, job.Settings.MaxMemoryLimit)
 	args = append(args, cgFlags...)
-	
+
 	args = append(args,
 		"--run",
 		"--",
@@ -374,7 +395,9 @@ func compileJob(ctx context.Context, job *models.Job, boxID uint64, paths models
 		if job.Output.CompileOutput != "" {
 			job.Output.Message = job.Output.CompileOutput
 		} else {
-			job.Output.Message = "Compilation failed"
+			msg := compileFailureMessageFromMetadata(paths.MetadataPath)
+			job.Output.Message = msg
+			job.Output.CompileOutput = msg
 		}
 		return models.JobStatus{Kind: models.StatusCompilationError}, nil
 	}
@@ -405,28 +428,28 @@ func runJob(ctx context.Context, job *models.Job, boxID uint64, paths models.Job
 	stackStr := strconv.FormatUint(job.Settings.StackLimit, 10)
 	fileSizeStr := strconv.FormatUint(job.Settings.MaxFileSize, 10)
 
-	args := make([]string, 0, 30)
-	
+	args := make([]string, 0, 40)
+
 	if useCgroup {
 		args = append(args, "--cg")
 	}
-	
+
 	args = append(args,
 		"-s",
 		"-b", boxIDStr,
 		"-M", paths.MetadataPath,
 	)
-	
+
 	if job.Settings.RedirectStderrToStdout {
 		args = append(args, "--stderr-to-stdout")
 	}
-	
+
 	if job.Settings.EnableNetwork {
 		args = append(args, "--share-net")
 	}
-	
+
 	args = append(args,
-		"--process="+processStr,
+		"--processes="+processStr,
 		"-t", cpuTimeStr,
 		"-x", "0",
 		"-w", wallTimeStr,
@@ -436,10 +459,10 @@ func runJob(ctx context.Context, job *models.Job, boxID uint64, paths models.Job
 		"-E", "HOME=/tmp",
 		"-d", "/etc:noexec",
 	)
-	
-	cgFlags := getCgroupFlags(job)
+
+	cgFlags := getCgroupFlags(job, job.Settings.MemoryLimit)
 	args = append(args, cgFlags...)
-	
+
 	args = append(args,
 		"--run",
 		"--",
@@ -475,4 +498,48 @@ func readOutputs(job *models.Job, paths models.JobPaths) error {
 		job.Output.CompileOutput = ""
 	}
 	return nil
+}
+
+func previewForLog(s string, max int) string {
+	if max <= 0 || s == "" {
+		return ""
+	}
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
+func compileFailureMessageFromMetadata(metadataPath string) string {
+	meta, err := utils.ReadMetadata(metadataPath)
+	if err != nil {
+		return "Compilation failed (no output captured)."
+	}
+	switch meta.Status {
+	case "TO":
+		return "Compilation time limit exceeded."
+	case "SG", "RE", "XX":
+		if meta.Message != "" {
+			return meta.Message
+		}
+		return "Compilation failed (process killed or exited unexpectedly)."
+	default:
+		if meta.Message != "" {
+			return meta.Message
+		}
+		return "Compilation failed (no output captured)."
+	}
+}
+
+func logFailedJob(reason string, job *models.Job, boxID uint64) {
+	if job == nil {
+		return
+	}
+	logrus.WithFields(logrus.Fields{
+		"reason":   reason,
+		"job_id":   job.ID,
+		"box_id":   boxID,
+		"status":   job.Status.Kind,
+	}).Error("failed job snapshot")
 }

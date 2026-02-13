@@ -17,7 +17,7 @@ func LanguageFor(name string) (models.Language, bool) {
 		return models.Language{
 			Name:       "cpp",
 			SourceFile: "main.cpp",
-			CompileCmd: "/usr/bin/g++ -O0 -Wall -Wextra -Werror -Wpedantic -Wfatal-errors main.cpp",
+			CompileCmd: "/usr/bin/g++ -O0 -Wall -Wextra -g -w -fsanitize=undefined -fno-omit-frame-pointer main.cpp",
 			RunCmd:     "./a.out",
 			IsCompiled: true,
 		}, true

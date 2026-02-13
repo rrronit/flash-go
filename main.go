@@ -17,7 +17,7 @@ func main() {
 	redisURL := utils.EnvString("REDIS_URL", "redis://127.0.0.1/")
 	port := utils.EnvString("PORT", "3001")
 	useBoxPool := utils.EnvBool("USE_BOX_POOL", false)
-	queueLengthLimit := utils.EnvInt("QUEUE_LENGTH_LIMIT", 1000)
+	queueLengthLimit := utils.EnvInt("QUEUE_LENGTH_LIMIT", 2000)
 
 	redisClient, err := redis.New(redisURL)
 	if err != nil {
@@ -25,7 +25,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	concurrency := runtime.NumCPU() * 4
+	concurrency := runtime.NumCPU() * 2
 
 	go func() {
 		worker.New(redisClient).Start(ctx, concurrency, useBoxPool)

@@ -334,20 +334,14 @@ func (h *Handler) GetBatch(c *gin.Context) {
 		return
 	}
 
-	submissions := make([]models.Judge0SubmissionDetails, 0, len(jobIDs))
-	for i, jobID := range jobIDs {
+	submissions := make([]*models.Judge0SubmissionDetails, 0, len(jobIDs))
+	for i := range jobIDs {
 		var job *models.Job
 		if i < len(jobs) {
 			job = jobs[i]
 		}
 		if job == nil {
-			submissions = append(submissions, models.Judge0SubmissionDetails{
-				Token: strconv.FormatUint(jobID, 10),
-				Status: models.Judge0Status{
-					ID:          13,
-					Description: "Internal Error",
-				},
-			})
+			submissions = append(submissions, nil)
 			continue
 		}
 
@@ -373,6 +367,9 @@ func (h *Handler) GetBatch(c *gin.Context) {
 		}
 		if job.Output.Message != "" {
 			details.Message = &job.Output.Message
+		} else if job.Status.Kind == models.StatusCompilationError && job.Output.CompileOutput != "" {
+			message := job.Output.CompileOutput
+			details.Message = &message
 		}
 		if job.Output.Time > 0 {
 			timeStr := strconv.FormatFloat(job.Output.Time, 'f', -1, 64)
@@ -383,7 +380,7 @@ func (h *Handler) GetBatch(c *gin.Context) {
 			details.Memory = &memory
 		}
 
-		submissions = append(submissions, details)
+		submissions = append(submissions, &details)
 	}
 
 	c.JSON(http.StatusOK, models.Judge0BatchResponse{

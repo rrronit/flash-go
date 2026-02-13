@@ -27,8 +27,7 @@ func NewJob(sourceCode, stdin, expected string, language models.Language, settin
 func NewJobID() uint64 {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err == nil {
-		id := binary.LittleEndian.Uint64(buf[:])
-		if id != 0 {
+		if id := binary.LittleEndian.Uint64(buf[:]); id != 0 {
 			return id
 		}
 	}
