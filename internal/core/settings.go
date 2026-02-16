@@ -14,7 +14,7 @@ func DefaultExecutionSettings() models.ExecutionSettings {
 		MaxStackLimit:                        512_000,
 		StackLimit:                           64_000,
 		MaxProcesses:                         60,
-		MaxFileSize:                          1024,
+		MaxFileSize:                          4096,
 		EnableNetwork:                        false,
 		EnablePerProcessAndThreadTimeLimit:   false,
 		EnablePerProcessAndThreadMemoryLimit: false,
