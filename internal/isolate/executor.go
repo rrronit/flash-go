@@ -149,18 +149,9 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 			return job.Status, compileErr
 		}
 		if compileStatus.Kind == models.StatusCompilationError {
-			logrus.WithFields(logrus.Fields{
-				"job_id":              job.ID,
-				"box_id":              boxID,
-				"status":              compileStatus.Kind,
-				"compile_output_len":  len(job.Output.CompileOutput),
-				"compile_output_head": previewForLog(job.Output.CompileOutput, 220),
-				"message_len":         len(job.Output.Message),
-				"message_head":        previewForLog(job.Output.Message, 220),
-			}).Warn("compile step failed")
 			job.Status = compileStatus
 			job.FinishedAt = time.Now().UnixNano()
-			logFailedJob("compilation failed", job, boxID)
+			// logFailedJob("compilation failed", job, boxID)
 			return job.Status, nil
 		}
 	}
@@ -198,9 +189,9 @@ func (e *Executor) Execute(ctx context.Context, job *models.Job) (models.JobStat
 
 	job.Status = utils.DetermineStatus(meta.Status, meta.ExitCode, job.Output.Stdout, job.ExpectedOutput)
 	job.FinishedAt = time.Now().UnixNano()
-	if job.Status.Kind != models.StatusAccepted {
-		logFailedJob("job finished with non-accepted status", job, boxID)
-	}
+	// if job.Status.Kind != models.StatusAccepted {
+	// 	logFailedJob("job finished with non-accepted status", job, boxID)
+	// }
 	return job.Status, nil
 }
 
